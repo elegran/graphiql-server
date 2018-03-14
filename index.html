@@ -119,7 +119,21 @@
         body: JSON.stringify(graphQLParams),
         credentials: 'same-origin',
       }).then(function (response) {
-        return response.text()
+        if (response.status === 401) {
+          return response.text().then(function (err) {
+            if (err === "You need to reauthorize!") {
+              console.log(window.location.pathname)
+              console.log(window.location.search)
+
+              window.location = '/auth/log-in?redirect=' + window.location.pathname + window.location.search
+              return '"Reauthorizing...."'
+            } else {
+              return err
+            }
+          })
+        } else {
+          return response.text()
+        }
       }).then(function (responseBody) {
         try {
           return JSON.parse(responseBody)

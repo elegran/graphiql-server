@@ -8,6 +8,7 @@ const RedisStore = require('connect-redis')(session)
 const path = require('path')
 const passport = require('passport')
 const OAuth2Strategy = require('passport-oauth2').Strategy
+const Auth0Strategy = require('passport-auth0')
 const bodyParser = require('body-parser')
 const fs = require('fs')
 const config = require('./config')
@@ -52,33 +53,46 @@ passport.deserializeUser(function(user, done) {
   done(null, user)
 })
 
-const oauth2Strategy = new OAuth2Strategy(
-  {
-    authorizationURL: config.OAUTH2_AUTHORIZATION_URL,
-    tokenURL: config.OAUTH2_TOKEN_URL,
-    clientID: config.OAUTH2_CLIENT_ID,
-    clientSecret: config.OAUTH2_CLIENT_SECRET,
-    callbackURL: config.OAUTH2_CALLBACK_URL,
-  },
-  (accessToken, refreshToken, profile, done) => {
-    const user = {
-      accessToken,
-      refreshToken,
-    }
-    done(null, user)
+
+const AUTH0_OPTS = {
+  domain:       config.AUTH0_DOMAIN,
+  clientID:     config.AUTH0_CLIENT_ID,
+  clientSecret: config.AUTH0_CLIENT_SECRET,
+  callbackURL:  config.AUTH0_CALLBACK_URL,
+  scope: 'email profile openid',
+  skipUserProfile: true
+}
+
+const OAUTH2_OPTS = {
+  authorizationURL: config.OAUTH2_AUTHORIZATION_URL,
+  tokenURL: config.OAUTH2_TOKEN_URL,
+  clientID: config.OAUTH2_CLIENT_ID,
+  clientSecret: config.OAUTH2_CLIENT_SECRET,
+  callbackURL: config.OAUTH2_CALLBACK_URL,
+}
+
+function strategy_verifier(accessToken, refreshToken, done) {
+  const user = {
+    accessToken,
+    refreshToken,
   }
-)
 
-passport.use(oauth2Strategy)
+  done(null, user)
+}
 
-app.get('/auth/log-in', passport.authenticate('oauth2'))
+const auth0Strategy = new Auth0Strategy(AUTH0_OPTS, (accessToken, refreshToken, extraParams, profile, done) => strategy_verifier(accessToken, refreshToken, done))
+const oauth2Strategy = new OAuth2Strategy(OAUTH2_OPTS, (accessToken, refreshToken, profile, done) => strategy_verifier(accessToken, refreshToken, done))
 
-app.get('/auth/callback',
-  passport.authenticate('oauth2', {failureRedirect: '/'}),
-  (req, res) => {
-    res.redirect('/')
-  }
-)
+const strategy = {
+  'auth0': auth0Strategy,
+  'oauth2': oauth2Strategy
+}[config.OAUTH_PROVIDER]
+
+passport.use(strategy)
+
+app.get('/auth/log-in', (req, res) => passport.authenticate(config.OAUTH_PROVIDER, { audience: config.AUTH0_AUDIENCE, connection: config.AUTH0_CONNECTION, state: req.query.redirect || '/'})(req,res))
+
+app.get('/auth/callback', passport.authenticate(config.OAUTH_PROVIDER, {failureRedirect: '/'}), (req, res) => res.redirect(req.query.state))
 
 app.get('/auth/log-out', function(req, res) {
   if (isUserLoggedIn(req)) {
@@ -88,12 +102,12 @@ app.get('/auth/log-out', function(req, res) {
 })
 
 app.get('/auth/refresh-token', function(req, res) {
-  if (!isUserLoggedIn(req)) {
-    res.redirect('/auth/log-in')
+  if (!isUserLoggedIn(req) || (!req.session.passport.user.refreshToken)) {
+    res.redirect('/auth/log-in?redirect=' + (req.params.redirect || '/'))
     return
   }
 
-  oauth2Strategy._oauth2.getOAuthAccessToken(
+  strategy._oauth2.getOAuthAccessToken(
     req.session.passport.user.refreshToken,
     { grant_type: 'refresh_token' },
     function(error, accessToken, refreshToken) {
@@ -104,7 +118,7 @@ app.get('/auth/refresh-token', function(req, res) {
 
       req.session.passport.user.accessToken = accessToken
       req.session.passport.user.refreshToken = refreshToken
-      res.redirect('/')
+      res.redirect(req.params.redirect)
     }
   )
 })
@@ -137,14 +151,15 @@ app.post('/proxy/graphql', function (req, res) {
     body: query,
   }).then(function (response) {
     const isUnauthorized = response.status === 401
-    if (isUnauthorized && isUserLoggedIn(req)) {
-      res.redirect('/auth/refresh-token')
-      return
-    }
 
-    response.json()
-      .then(jsonBody =>  res.send(jsonBody))
-      .catch(error => res.send(error))
+    if (isUnauthorized && isUserLoggedIn(req)) {
+      res.status(401).send("You need to reauthorize!")
+      return
+    } else {
+      response.json()
+        .then(jsonBody =>  res.send(jsonBody))
+        .catch(error => res.send(error))
+    }
   })
 })
 
@@ -169,7 +184,7 @@ app.use(function(req, res) {
 })
 
 app.listen(config.APP_PORT, function () {
-  console.log(`Example app listening on port ${config.APP_PORT}!`)
+  console.log(`GraphiQL app listening on port ${config.APP_PORT}!`)
 })
 
 // required to use the server on the tests
