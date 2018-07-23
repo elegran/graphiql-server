@@ -150,16 +150,16 @@ app.post('/proxy/graphql', function (req, res) {
     },
     body: query,
   }).then(function (response) {
-    const isUnauthorized = response.status === 401
+      response.json().then(jsonBody =>  {
+        const isUnauthorized = jsonBody.errors[0].message == '401 Unauthorized'
 
-    if (isUnauthorized && isUserLoggedIn(req)) {
-      res.status(401).send("You need to reauthorize!")
-      return
-    } else {
-      response.json()
-        .then(jsonBody =>  res.send(jsonBody))
-        .catch(error => res.send(error))
-    }
+        if (isUnauthorized && isUserLoggedIn(req)) {
+          res.status(401).send("You need to reauthorize!")
+          return
+        } else {
+          res.send(jsonBody)
+        }
+      }).catch(error => res.send(error))
   })
 })
 
